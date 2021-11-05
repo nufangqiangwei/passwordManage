@@ -105,19 +105,19 @@ func checkUserFunc(ctx *gin.Context) {
 }
 
 type ErrResponse struct {
-	Code    int
-	Message string
+	Code    int    `json:"code"`
+	Message string `json:"message"`
 }
 type registerResponse struct {
-	Code       int
-	UserId     int64
-	WebPubKey  string
-	EncryptStr string
+	Code       int    `json:"code"`
+	UserId     int64  `json:"userId"`
+	WebPubKey  string `json:"webPubKey"`
+	EncryptStr string `json:"encryptStr"`
 }
 type Response struct {
-	Code    int
-	Message string
-	Data    []interface{}
+	Code    int           `json:"code"`
+	Message string        `json:"message"`
+	Data    []interface{} `json:"data"`
 }
 
 // request Model
@@ -148,6 +148,10 @@ type EncryptData struct {
 	UserId     int64
 	EncryptStr string
 	Timestamp  int64
+}
+type GetUserData struct {
+	EncryptStr   string
+	LastPushTime int64
 }
 
 // model
@@ -246,14 +250,16 @@ func registerView(ctx *gin.Context) {
 	h.Write([]byte(form.UserPubKey))
 	userMd5 := hex.EncodeToString(h.Sum(nil))
 	var user User
-	db.First(&user, "user_mad5=?", userMd5)
+	db.First(&user, "user_md5=?", userMd5)
 	sysConfig := &SysConfig{}
 	db.First(sysConfig, "config_key=?", "webPriKey")
 	if sysConfig.ConfigValue == "" {
 		ctx.JSON(http.StatusOK, ErrResponse{Code: 404, Message: "系统没有添加私钥"})
 		return
 	}
-	if user.UserMd5 != "" {
+	println(userMd5)
+	fmt.Printf("%v\n", user)
+	if user.Id != 0 {
 		ctx.JSON(http.StatusOK, registerResponse{Code: 200, UserId: user.Id, WebPubKey: sysConfig.ConfigValue, EncryptStr: user.EncryptStr})
 		return
 	}
@@ -266,7 +272,7 @@ func registerView(ctx *gin.Context) {
 }
 func getWebListView(ctx *gin.Context) {
 	var queryWebList []WebList
-	db.Find(queryWebList)
+	db.Find(&queryWebList)
 	ctx.JSON(http.StatusOK, map[string]interface{}{"code": 200, "message": "ok", "data": queryWebList})
 }
 func saveUserDataView(ctx *gin.Context) {
@@ -324,19 +330,28 @@ func saveUserDataView(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, Response{Code: 200, Message: "ok", Data: []interface{}{}})
 }
 func getUserDataView(ctx *gin.Context) {
-	var queryUserDataList []UserData
-	lastPushTime := ctx.Request.PostFormValue("lastPushTime")
+	var (
+		queryUserDataList []UserData
+		jsonData          GetUserData
+	)
+
+	err := ctx.BindJSON(&jsonData)
+	if err != nil {
+		fmt.Printf("%+v", err)
+		ctx.JSON(http.StatusBadRequest, ErrResponse{Code: 404, Message: "参数错误"})
+		return
+	}
 	user := getRequestUser(ctx)
 
-	if lastPushTime == "" {
+	if jsonData.LastPushTime == 0 {
 		db.Find(&queryUserDataList, "user_id=?", user.Id)
 	} else {
-		db.Find(&queryUserDataList, "user_id=?", user.Id, "time_stamp=?", lastPushTime)
+		db.Where("user_id=?", user.Id).Where("time_stamp>=?", jsonData.LastPushTime/1000).Find(&queryUserDataList)
 	}
 
-	result := make(map[string]interface{}, 0)
+	result := make([]map[string]string, 0)
 	for _, value := range queryUserDataList {
-		result[value.WebKey] = value.WebData
+		result = append(result, map[string]string{"webKey": value.WebKey, "webData": value.WebData})
 	}
 	ctx.JSON(http.StatusOK, map[string]interface{}{"code": 200, "message": "ok", "data": result})
 }
@@ -356,7 +371,7 @@ func AppendWebListView(ctx *gin.Context) {
 	Web.WebKey = form.WebKey
 	Web.Icon = form.Icon
 	db.Create(&Web)
-	ctx.JSON(http.StatusOK, map[string]interface{}{"Code": 200, "Message": "ok"})
+	ctx.JSON(http.StatusOK, map[string]interface{}{"code": 200, "message": "ok"})
 }
 func uploadMessageOrFile(ctx *gin.Context) {
 	var (
