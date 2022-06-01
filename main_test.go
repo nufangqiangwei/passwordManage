@@ -72,3 +72,93 @@ func TestRSA(t *testing.T) {
 	}
 	println("正确")
 }
+
+type Model interface {
+	createTable() string
+}
+
+type table1 struct {
+	xx int
+}
+
+func (t table1) createTable() string {
+	return ""
+}
+
+type table2 struct {
+	xx int
+}
+
+func (t table2) createTable() string {
+	return ""
+}
+
+type table3 struct {
+	xx int
+}
+
+func (t table3) createTable() string {
+	return ""
+}
+
+type ListNode struct {
+	Value int
+	Next  *ListNode
+}
+
+func Test_xxx(T *testing.T) {
+	root := &ListNode{Value: 0, Next: nil}
+	cacheNode := root
+	for i := 1; i < 10; i++ {
+		cacheNode.Next = &ListNode{
+			Value: i, Next: nil,
+		}
+		cacheNode = cacheNode.Next
+	}
+	cur := root
+	for cur != nil {
+		T.Log(cur.Value)
+		cur = cur.Next
+	}
+	reversalNode(root)
+	println("")
+	cur = root
+	for cur != nil {
+		T.Log(cur.Value)
+		cur = cur.Next
+	}
+}
+
+func reversalNode(node *ListNode) *ListNode {
+	var (
+		node1, node2, node3, result, cache *ListNode
+	)
+	cache = node
+	node3 = node
+	result = node
+	for node3 != nil {
+		node1 = cache
+		if node1 == nil {
+			return result
+		}
+		node2 = cache.Next
+		if node2 != nil {
+			node3 = node2.Next
+			node1.Next = nil
+			node2.Next = nil
+			node2.Next = node1
+			node1.Next = node3
+			cache = node3
+		}
+	}
+	return result
+}
+
+func TestSort(t *testing.T) {
+	a := []int{5, 2, 8, 3, 1, 10}
+	fmt.Printf("%v\n", a)
+	sort.Ints(a)
+	for _, v := range a {
+		print(v)
+	}
+}
