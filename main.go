@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/nufangqiangwei/timewheel"
+	"golang.org/x/net/webdav"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -33,11 +34,19 @@ var (
 	db    *gorm.DB
 	Timer *timeWheel.TimeWheel
 	Log   *log.Logger
-	err   error
+	fs    *webdav.Handler
 )
 
-const maxFileData = 10 << 20
-const staticFilePath = ""
+const (
+	maxFileData    = 10 << 20
+	staticFilePath = ""
+	flagUserName   = "root"
+	flagPassword   = "]=[-p0o9"
+	flagReadonly   = false
+	flagRootDir    = "/home/ubuntu/webDAV"
+	//flagRootDir      = "E:/"
+	databasePassword = "]=[-p0o9"
+)
 
 func checkUser(ctx *gin.Context, EncryptStr string) (result bool) {
 	sysConfig := &SysConfig{}
@@ -202,7 +211,7 @@ type GetUserData struct {
 	LastPushTime int64
 }
 
-// model
+// database Model
 type User struct {
 	Id         int64 `gorm:"primaryKey"`
 	EncryptStr string
@@ -214,16 +223,17 @@ type SysConfig struct {
 	ConfigValue string
 }
 type WebList struct {
-	Id     int64 `gorm:"primaryKey"`
-	Name   string
-	WebKey string
-	Icon   string
+	Id     int64  `gorm:"primaryKey" json:"id"`
+	Name   string `json:"name"`
+	WebKey string `json:"webKey"`
+	Icon   string `json:"icon"`
 }
 type UserData struct {
 	Id        int64 `gorm:"primaryKey"`
 	UserId    int64
 	WebKey    string
 	WebData   string
+	Version   int
 	TimeStamp int64
 	Deleted   bool
 }
@@ -249,7 +259,8 @@ type UserFile struct {
 func init() {
 	//"passwordTest"
 	//"mypassword"
-	dsn := "qiangwei:Qiangwei@tcp(101.32.15.231:6603)/passwordTest?charset=utf8mb4&parseTime=True&loc=Local"
+	var err error
+	dsn := "qiangwei:Qiangwei@tcp(101.32.15.231:6603)/mypassword?charset=utf8mb4&parseTime=True&loc=Local&readTimeout=300s"
 	db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{
 		NamingStrategy: schema.NamingStrategy{
 			TablePrefix:   "",
@@ -266,6 +277,11 @@ func init() {
 	Log.SetOutput(logFile)
 
 	Timer = timeWheel.NewTimeWheel(&timeWheel.WheelConfig{IsRun: true, Log: Log})
+	fs = &webdav.Handler{
+		Prefix:     "webDav",
+		FileSystem: webdav.Dir(flagRootDir),
+		LockSystem: webdav.NewMemLS(),
+	}
 
 }
 func main() {
@@ -281,6 +297,7 @@ func main() {
 		checkUser.POST("/SaveUserData", saveUserDataView)
 		checkUser.POST("/GetUserData", getUserDataView)
 		checkUser.POST("/AppendWebAddress", AppendWebListView)
+		checkUser.GET("/getVersion", getDataVersion)
 	}
 	app.Use(limits.RequestSizeLimiter(maxFileData))
 	//app.Run(":8080")
@@ -353,23 +370,22 @@ func saveUserDataView(ctx *gin.Context) {
 		ctx.JSON(http.StatusOK, ErrResponse{Code: 500, Message: "内部错误"})
 		return
 	}
-	//db.Find(&queryUserDataList, "user_id=?", user.Id).Where("web_key IN ?", webKeyList).Where("deleted", false)
-	db.Where("user_id=?", user.Id).Where("web_key IN ?", webKeyList).Where("deleted", false).Find(&queryUserDataList)
+	versionList := getUserPasswordVersion(user.Id)
+	db.Where("user_id=?", user.Id).Where("web_key IN ?", webKeyList).Find(&queryUserDataList)
 
-	if len(queryUserDataList) > 0 {
-		var deleteId []int64
-		for _, aa := range queryUserDataList {
-			deleteId = append(deleteId, aa.Id)
-		}
-		db.Model(UserData{}).Where("id in ?", deleteId).Update("deleted", true)
+	var lastVersion int
+	if len(versionList) == 0 {
+		lastVersion = 1
+	} else {
+		lastVersion = versionList[len(versionList)-1] + 1
 	}
-
 	timeStamp = time.Now().Unix()
 	for _, value := range form.UserData {
 		saveUserDtaList = append(saveUserDtaList, UserData{
 			UserId:    user.Id,
 			WebKey:    value.WebKey,
 			WebData:   value.WebData,
+			Version:   lastVersion,
 			TimeStamp: timeStamp,
 		})
 	}
@@ -485,6 +501,28 @@ func uploadMessageOrFile(ctx *gin.Context) {
 		ExpiredTime: form.OutTime,
 	})
 	ctx.JSON(http.StatusOK, Response{})
+}
+func getDataVersion(ctx *gin.Context) {
+	dataType := ctx.Query("dataType")
+	data, exist := ctx.Get("user")
+	if !exist {
+		ctx.JSON(http.StatusInternalServerError, ErrResponse{Code: 500, Message: "写入错误"})
+		return
+	}
+	user, ok := data.(*User)
+	if !ok {
+		ctx.JSON(http.StatusInternalServerError, ErrResponse{Code: 500, Message: "内部错误"})
+		return
+	}
+	result := make([]int, 0)
+	switch dataType {
+	case "password":
+		result = getUserPasswordVersion(user.Id)
+	default:
+		ctx.JSON(http.StatusForbidden, ErrResponse{Code: 403, Message: "错误的参数"})
+		return
+	}
+	ctx.JSON(http.StatusOK, map[string]interface{}{"data": result})
 }
 
 // 储存用户上传的文件
@@ -638,7 +676,7 @@ func initPri(PriStr string) (PriKey *rsa.PrivateKey) {
 	return
 }
 
-//使用公钥加密
+// EncyptogRSAPub 使用公钥加密
 func EncyptogRSAPub(src []byte, pubKey *rsa.PublicKey) (res []byte, err error) {
 	//4.使用公钥加密数据
 	maxLength := pubKey.Size()
@@ -691,7 +729,7 @@ func EncyptogRSAPub(src []byte, pubKey *rsa.PublicKey) (res []byte, err error) {
 //	return
 //}
 
-//使用私钥解密
+// DecrptogRSA 使用私钥解密
 func DecrptogRSA(src []byte, privateKey *rsa.PrivateKey) (res []byte, err error) {
 	maxLength := privateKey.Size()
 	length := 0
@@ -760,4 +798,15 @@ func fileExist(path string) bool {
 // 定时删除用户同步的数据
 func removeCopyMessage(data interface{}) {
 
+}
+
+// 获取用户上次提交的版本
+func getUserPasswordVersion(userId int64) []int {
+	query := make([]UserData, 0)
+	db.Where("user_id=?", userId).Distinct("version").Find(&query)
+	result := make([]int, 0)
+	for _, i2 := range query {
+		result = append(result, i2.Version)
+	}
+	return result
 }

@@ -162,3 +162,15 @@ func TestSort(t *testing.T) {
 		print(v)
 	}
 }
+
+func TestVersion(t *testing.T) {
+	versionList := getUserPasswordVersion(2)
+	var lastVersion int
+	if len(versionList) == 0 {
+		lastVersion = 1
+	} else {
+		lastVersion = versionList[len(versionList)-1] + 1
+	}
+	fmt.Printf("%v\n", versionList)
+	println(lastVersion)
+}
