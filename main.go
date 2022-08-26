@@ -297,7 +297,7 @@ func main() {
 		checkUser.POST("/SaveUserData", saveUserDataView)
 		checkUser.POST("/GetUserData", getUserDataView)
 		checkUser.POST("/AppendWebAddress", AppendWebListView)
-		checkUser.GET("/getVersion", getDataVersion)
+		checkUser.POST("/getVersion", getDataVersion)
 	}
 	app.Use(limits.RequestSizeLimiter(maxFileData))
 	//app.Run(":8080")
