@@ -120,7 +120,7 @@ func Cors() gin.HandlerFunc {
 		method := c.Request.Method               //请求方法
 		origin := c.Request.Header.Get("Origin") //请求头部
 		var headerKeys []string                  // 声明请求头keys
-		for k, _ := range c.Request.Header {
+		for k := range c.Request.Header {
 			headerKeys = append(headerKeys, k)
 		}
 		headerStr := strings.Join(headerKeys, ", ")
@@ -207,8 +207,8 @@ type EncryptData struct {
 	Timestamp  int64
 }
 type GetUserData struct {
-	EncryptStr   string
-	LastPushTime int64
+	EncryptStr string
+	Version    int64
 }
 
 // database Model
@@ -406,17 +406,12 @@ func getUserDataView(ctx *gin.Context) {
 	}
 	user := getRequestUser(ctx)
 
-	if jsonData.LastPushTime == 0 {
-		db.Find(&queryUserDataList, "user_id=?", user.Id)
-	} else {
-		db.Where("user_id=?", user.Id).Where("time_stamp>=?", jsonData.LastPushTime/1000).Find(&queryUserDataList)
-	}
-
+	db.Where("user_id=?", user.Id).Where("version>=?", jsonData.Version).Find(&queryUserDataList)
 	result := make([]map[string]string, 0)
 	for _, value := range queryUserDataList {
 		result = append(result, map[string]string{"webKey": value.WebKey, "webData": value.WebData})
 	}
-	ctx.JSON(http.StatusOK, map[string]interface{}{"code": 200, "message": "ok", "data": result})
+	ctx.JSON(http.StatusOK, map[string]interface{}{"code": 200, "message": "ok", "data": result, "version": jsonData.Version})
 }
 func AppendWebListView(ctx *gin.Context) {
 	var form WebListForm
