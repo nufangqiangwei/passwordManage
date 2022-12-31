@@ -15,7 +15,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/nufangqiangwei/timewheel"
-	"golang.org/x/net/webdav"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -34,7 +33,7 @@ var (
 	db    *gorm.DB
 	Timer *timeWheel.TimeWheel
 	Log   *log.Logger
-	fs    *webdav.Handler
+	//fs    *webdav.Handler
 )
 
 const (
@@ -50,7 +49,7 @@ const (
 
 func checkUser(ctx *gin.Context, EncryptStr string) (result bool) {
 	sysConfig := &SysConfig{}
-	db.First(sysConfig, "config_key=?", "webPriKey")
+	db.First(sysConfig, "config_key=?", "privateKeyStr")
 	if sysConfig.ConfigValue == "" {
 		ctx.JSON(http.StatusOK, ErrResponse{Code: 404, Message: "系统没有添加私钥"})
 		return
@@ -78,7 +77,7 @@ func checkUser(ctx *gin.Context, EncryptStr string) (result bool) {
 		ctx.JSON(http.StatusOK, ErrResponse{Code: 404, Message: "用户错误"})
 		return
 	}
-	if data.EncryptStr != user.EncryptStr || time.Now().Unix()-data.Timestamp > 60 {
+	if data.EncryptStr != user.EncryptStr || time.Now().UnixMilli()-data.Timestamp > 60000 {
 		ctx.JSON(http.StatusOK, ErrResponse{Code: 400, Message: "密钥错误"})
 		return
 	}
@@ -277,29 +276,31 @@ func init() {
 	Log.SetOutput(logFile)
 
 	Timer = timeWheel.NewTimeWheel(&timeWheel.WheelConfig{IsRun: true, Log: Log})
-	fs = &webdav.Handler{
-		Prefix:     "webDav",
-		FileSystem: webdav.Dir(flagRootDir),
-		LockSystem: webdav.NewMemLS(),
-	}
+	//fs = &webdav.Handler{
+	//	Prefix:     "webDav",
+	//	FileSystem: webdav.Dir(flagRootDir),
+	//	LockSystem: webdav.NewMemLS(),
+	//}
 
 }
 func main() {
 	defaultApp := gin.Default()
 	defaultApp.Use(Cors())
-	app := defaultApp.Group("/password/api")
-	app.POST("/register", registerView)
-	app.GET("/webList", getWebListView)
-	app.POST("/SaveText", uploadMessageOrFile)
-
-	checkUser := app.Use(checkUserFunc)
+	//app := defaultApp.Group("/password/api")
+	defaultApp.POST("/register", registerView)
+	defaultApp.GET("/webList", getWebListView)
+	defaultApp.POST("/SaveText", uploadMessageOrFile)
+	defaultApp.GET("/error", getError)
+	defaultApp.POST("/error", postError)
+	checkUser := defaultApp.Use(checkUserFunc)
 	{
 		checkUser.POST("/SaveUserData", saveUserDataView)
 		checkUser.POST("/GetUserData", getUserDataView)
 		checkUser.POST("/AppendWebAddress", AppendWebListView)
+
 		checkUser.POST("/getVersion", getDataVersion)
 	}
-	app.Use(limits.RequestSizeLimiter(maxFileData))
+	defaultApp.Use(limits.RequestSizeLimiter(maxFileData))
 	//app.Run(":8080")
 	defaultApp.Run(":5000")
 
@@ -318,9 +319,9 @@ func registerView(ctx *gin.Context) {
 	var user User
 	db.First(&user, "user_md5=?", userMd5)
 	sysConfig := &SysConfig{}
-	db.First(sysConfig, "config_key=?", "webPriKey")
+	db.First(sysConfig, "config_key=?", "publicKeyStr")
 	if sysConfig.ConfigValue == "" {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 404, Message: "系统没有添加私钥"})
+		ctx.JSON(http.StatusOK, ErrResponse{Code: 404, Message: "系统没有添加密钥"})
 		return
 	}
 	if user.Id != 0 {
@@ -348,9 +349,9 @@ func saveUserDataView(ctx *gin.Context) {
 		timeStamp         int64
 		form              saveUserDataForm
 	)
-	binerr := ctx.BindJSON(&form)
-	if binerr != nil {
-		println(binerr.Error())
+	err := ctx.BindJSON(&form)
+	if err != nil {
+		println(err.Error())
 		ctx.JSON(http.StatusOK, ErrResponse{Code: 403, Message: "参数错误"})
 		return
 	}
@@ -495,6 +496,7 @@ func uploadMessageOrFile(ctx *gin.Context) {
 	Timer.AppendOnceFunc(removeCopyMessage, "", "", timeWheel.Crontab{
 		ExpiredTime: form.OutTime,
 	})
+	ctx.JSON(http.StatusOK, Response{})
 	ctx.JSON(http.StatusOK, Response{})
 }
 func getDataVersion(ctx *gin.Context) {
@@ -805,3 +807,23 @@ func getUserPasswordVersion(userId int64) []int {
 	}
 	return result
 }
+
+func getError(ctx *gin.Context) {
+	println(ctx.Query("msg"))
+}
+func postError(ctx *gin.Context) {
+	a := map[string]string{}
+	ctx.BindJSON(&a)
+	fmt.Printf("%v\n", a)
+}
+
+/*
+
+   print('getTemporaryDirectory ：${(await getTemporaryDirectory()).path}');
+   print('getApplicationSupportDirectory ：${(await getApplicationSupportDirectory()).path}');
+   print('getApplicationDocumentsDirectory ：${(await getApplicationDocumentsDirectory()).path}');
+   print('getExternalStorageDirectory ：${await getExternalStorageDirectory()}');
+   print('getExternalCacheDirectories ：${await getExternalCacheDirectories()}');
+   print("getExternalStorageDirectories ：s ${await getExternalStorageDirectories()}");
+
+*/
