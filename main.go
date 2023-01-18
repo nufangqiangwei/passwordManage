@@ -290,6 +290,7 @@ func main() {
 	app := defaultApp.Group("/password/api")
 	app.POST("/register", registerView)
 	app.GET("/webList", getWebListView)
+	app.GET("/getRandImageList", getRandomImageList)
 	app.POST("/SaveText", uploadMessageOrFile)
 
 	checkUser := app.Use(checkUserFunc)
@@ -518,6 +519,22 @@ func getDataVersion(ctx *gin.Context) {
 		return
 	}
 	ctx.JSON(http.StatusOK, map[string]interface{}{"data": result})
+}
+func getRandomImageList(ctx *gin.Context) {
+	ctx.JSON(200, map[string][]string{
+		"msg": {
+			"http://192.168.111.45/0081ffzKly8h9eorghkayj32c03407wh.jpg",
+			"http://192.168.111.45/0081ffzKly8h9eotamm3jj31jk2bcdlv.jpg",
+			"http://192.168.111.45/699a48a7ly1h0qsgdv68ej221s33zhdv.jpg",
+			"http://192.168.111.45/69618f6fly1h6lkc0f9bcj20r01ewjsh.jpg",
+			"http://192.168.111.45/4886703f9a211808c140d32529149394.jpg",
+			"http://192.168.111.45/008vVelsly1ha6tt89lhnj30cf0jgn0g.jpg",
+			"http://192.168.111.45/008vVelsly1ha6q1g1dxyj30rs2yztud.jpg",
+			"http://192.168.111.45/008vVelsly1ha6prq6bwsj311y1kw1i1.jpg",
+			"http://192.168.111.45/008vVelsly1ha6prk8y1xj316o1kw4mo.jpg",
+			"http://192.168.111.45/008vVelsly1ha6kbkuq5cj30lb0lc418.jpg",
+		},
+	})
 }
 
 // 储存用户上传的文件
