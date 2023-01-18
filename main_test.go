@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAddAsset(t *testing.T) {
@@ -173,4 +174,8 @@ func TestVersion(t *testing.T) {
 	}
 	fmt.Printf("%v\n", versionList)
 	println(lastVersion)
+}
+
+func TestTime(t *testing.T) {
+	println(time.Now().UnixMilli())
 }
