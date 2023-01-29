@@ -15,7 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/nufangqiangwei/timewheel"
-	"gorm.io/driver/mysql"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
@@ -259,8 +259,8 @@ func init() {
 	//"passwordTest"
 	//"mypassword"
 	var err error
-	dsn := "qiangwei:Qiangwei@tcp(101.32.15.231:6603)/mypassword?charset=utf8mb4&parseTime=True&loc=Local&readTimeout=300s"
-	db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{
+	//dsn := "qiangwei:Qiangwei@tcp(101.32.15.231:6603)/mypassword?charset=utf8mb4&parseTime=True&loc=Local&readTimeout=300s"
+	db, err = gorm.Open(sqlite.Open("passwordData.db"), &gorm.Config{
 		NamingStrategy: schema.NamingStrategy{
 			TablePrefix:   "",
 			SingularTable: true,
@@ -292,6 +292,7 @@ func main() {
 	defaultApp.POST("/SaveText", uploadMessageOrFile)
 	defaultApp.GET("/error", getError)
 	defaultApp.POST("/error", postError)
+	defaultApp.GET("/getRandomImageList", getRandomImageList)
 	checkUser := defaultApp.Use(checkUserFunc)
 	{
 		checkUser.POST("/SaveUserData", saveUserDataView)
@@ -522,6 +523,7 @@ func getDataVersion(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, map[string]interface{}{"data": result})
 }
 func getRandomImageList(ctx *gin.Context) {
+	// 来源网站：煎蛋，instagram, twitter
 	ctx.JSON(200, map[string][]string{
 		"msg": {
 			"http://192.168.111.45/0081ffzKly8h9eorghkayj32c03407wh.jpg",
