@@ -274,7 +274,10 @@ func init() {
 	}
 	Log = log.New(logFile, "[dev]", log.LstdFlags)
 	Log.SetOutput(logFile)
-
+	err = db.AutoMigrate(&User{}, &SysConfig{}, &WebList{}, &UserData{}, &SynchronousMessage{}, &UserFile{})
+	if err != nil {
+		Log.Println("创建表出错")
+	}
 	Timer = timeWheel.NewTimeWheel(&timeWheel.WheelConfig{IsRun: true, Log: Log})
 	//fs = &webdav.Handler{
 	//	Prefix:     "webDav",
