@@ -17,7 +17,6 @@ import (
 	"github.com/nufangqiangwei/timewheel"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
 	"io"
 	"io/ioutil"
@@ -265,7 +264,7 @@ func init() {
 			TablePrefix:   "",
 			SingularTable: true,
 		},
-		Logger: logger.Default.LogMode(logger.Info),
+		//Logger: logger.Default.LogMode(logger.Info),
 	})
 	//db, _ = sql.Open("mysql", "qiangwei:Qiangwei@tcp(101.32.15.231:6603)/mypassword")
 	logFile, err := os.OpenFile("webRun.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
@@ -274,7 +273,7 @@ func init() {
 	}
 	Log = log.New(logFile, "[dev]", log.LstdFlags)
 	Log.SetOutput(logFile)
-
+	db.AutoMigrate(&User{}, &SysConfig{}, &WebList{}, &UserData{}, SynchronousMessage{}, &UserFile{})
 	Timer = timeWheel.NewTimeWheel(&timeWheel.WheelConfig{IsRun: true, Log: Log})
 	//fs = &webdav.Handler{
 	//	Prefix:     "webDav",
@@ -408,7 +407,9 @@ func getUserDataView(ctx *gin.Context) {
 	}
 	user := getRequestUser(ctx)
 
-	db.Where("user_id=?", user.Id).Where("version>=?", jsonData.Version).Find(&queryUserDataList)
+	db.Where("id IN (?)",
+		db.Select("max(id)").Where("user_id=?", user.Id).Group("web_key").Table("user_data"),
+	).Table("user_data").Find(&queryUserDataList)
 	result := make([]map[string]string, 0)
 	for _, value := range queryUserDataList {
 		result = append(result, map[string]string{"webKey": value.WebKey, "webData": value.WebData})
