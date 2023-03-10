@@ -53,6 +53,8 @@ dmAgHGaKaPtdRvIDDTYHBFT9Cb56hJ8e+2DfSPHW3VjfMtxhs1KBNCo7cDezLHUM
 5ZR/ozG5r+GjGRf/DfHONe8=
 -----END PRIVATE KEY-----`
 
+const user_pub = `-----BEGIN PUBLIC KEY-----MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1xsatShmgsXGJZcrmWLAUm3xQlJXr4E5vHcQZPZwEREWpmW1rsJdOeWAkz1hImXfrOXk1+f719nWIr3rjvPhgkPoOoYpXZSgHGgESnfVAO1PWwFtr9/5TpTwEM8c+ZBwJoEc5fGMrf/NkiLfoecdzx/5xWqF+Hd4SNbuqq1+03+Vlh2kyTHBwlb3wYl7mOPTSfQd1QriqIFI6CoVHydnl7qXs2iHeGG/eV/JRW5H5/pl5VXFfJR9hQjO+YE07zSQVi9HhV1UC+cvdfmIBRQ+Uqi6wFux5rtAQVIPAkk1WbMFOVkXfdc+eAtKsky65VouNb0oIbNmiicRPJCx3NtSyQIDAQAB-----END PUBLIC KEY-----`
+
 func TestAddAsset(t *testing.T) {
 	param := map[string]string{
 		"server_ip":   "172.25.88.90",
@@ -209,4 +211,11 @@ func TestSign(t *testing.T) {
 	println(RSAVerifySign(pub, a, signStr) != nil)
 	q := "KBlRptBhdgHiHoslYFkunSeNyaq3UZtV2XPLbYeEvVgaEfPwcLj6LWkD9TTsvW3fr+2mNwz3wXkd8ZauodvEvT8XCzuWcmDnjJH0VzvRRsGa+Tvsxp/3RD0oDa8BfSBW6eFnNsyYeKSIKBtGLgrisFgXjj6yw1aFq+bx8djy9LgaaaRNnOeBoxJCZvTxRR0hVW+3hv6NbEVH6KTQRyVEkm+FtPU4Tz+Tlzxx7LBIAjrewFFZz5DAmiP5EPthDmybxWkQ+/uYEGGn/MXPbcl0CTIc1ted3CGE9RSsmA+4BuaAJZvs/0RrPW/+aonEJJICSpl/FXJzm4wtQUeds+WVRA=="
 	println(RSAVerifySign(pub, q, signStr) != nil)
+}
+
+func TestUserSign(t *testing.T) {
+	signStr := "q1+03+Vlh2k"
+	pub := initPub(user_pub)
+	a := "AYLbe1Wa/ZzrwR5PBpsb5dVGGPy7fY/LNzh6fVE/QyJrqYivmjFLGe3ZUAd/7zrDCc38Pj11qa76nhnVlkxhL18fskkZI051E9txLoAvdNwemL1/SiJBl7Hdzr37F/r/B18CfqmbuCernVh5BS3BOpPPNqqmxmlcX/xd43r6Zkm98C588PgAbbXr7Vaqcd0b3Nx30RgpIfDvSTBFt9SvehUBfzufGNn6+Z7KyhAYoP3lY6y1f4Bmmk/B0xfyacN8HgudiQEjqrwTM5Bk8prKq56D+wrQepD2pvyNP/95BrxCyP/uI+z08mk2JVq9wUJAcs5xs9ACl7UJmrhdnLpamg=="
+	println(RSAVerifySign(pub, a, signStr) != nil)
 }

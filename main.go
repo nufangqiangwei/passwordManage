@@ -79,6 +79,7 @@ func checkUser(ctx *gin.Context, EncryptStr string, signed string) (result bool)
 		ctx.JSON(http.StatusOK, ErrResponse{Code: 404, Message: "用户错误"})
 		return
 	}
+	println(user.UserPubKey)
 	if RSAVerifySign(initPub(user.UserPubKey), signed, user.EncryptStr) != nil || time.Now().UnixMilli()-data.Timestamp > 60000 {
 		ctx.JSON(http.StatusOK, ErrResponse{Code: 400, Message: "密钥错误"})
 		return
@@ -277,8 +278,8 @@ func init() {
 	if err != nil {
 		log.Fatalln("open file error !")
 	}
-	gin.DefaultWriter = logFile
-	gin.DefaultErrorWriter = logFile
+	//gin.DefaultWriter = logFile
+	//gin.DefaultErrorWriter = logFile
 	Log = log.New(logFile, "[dev]", log.LstdFlags)
 	Log.SetOutput(logFile)
 	err = db.AutoMigrate(&User{}, &SysConfig{}, &WebList{}, &UserData{}, SynchronousMessage{}, &UserFile{})
