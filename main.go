@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto"
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
@@ -12,10 +15,18 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	limits "github.com/gin-contrib/size"
 	"github.com/gin-gonic/gin"
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/google/uuid"
+	"github.com/mattn/go-sqlite3"
+	"github.com/nufangqiangwei/timewheel"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
+	"io"
 	"io/ioutil"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"strconv"
@@ -23,48 +34,27 @@ import (
 	"time"
 )
 
-var db *sql.DB
+var (
+	db    *gorm.DB
+	Timer *timeWheel.TimeWheel
+	Log   *log.Logger
+)
 
-func checkUserFunc(ctx *gin.Context) {
-	jsonParams := make(map[string]interface{})
+const (
+	maxFileData      = 10 << 20
+	staticFilePath   = ""
+	flagUserName     = "root"
+	flagPassword     = "]=[-p0o9"
+	flagReadonly     = false
+	flagRootDir      = "/home/ubuntu/webDAV"
+	databasePassword = "]=[-p0o9"
+)
 
-	err := ctx.BindJSON(&jsonParams)
-	if err != nil {
-		fmt.Printf("%+v", err)
-		ctx.JSON(http.StatusBadRequest, ErrResponse{Code: 404, Message: "参数错误"})
-		return
-	}
-	UserId, _ := jsonParams["UserId"].(string)
-	EncryptStr, _ := jsonParams["EncryptStr"].(string)
-	TimestampStr, _ := jsonParams["Timestamp"].(string)
-	Timestamp, err := strconv.Atoi(TimestampStr)
-	if err != nil {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 400, Message: "参数错误"})
-		ctx.Abort()
-		return
-	}
-	if time.Now().Unix()-int64(Timestamp) > 60 {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 500, Message: "参数错误"})
-		ctx.Abort()
-		return
-	}
-	if UserId == "" || EncryptStr == "" {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 400, Message: "缺少参数"})
-		ctx.Abort()
-		return
-	}
-	user := &User{}
-	queryOneUser(user, "select * from user where Id=?", UserId)
-	if user.usermd5 == "" {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 404, Message: "用户错误"})
-		ctx.Abort()
-		return
-	}
+func checkUser(ctx *gin.Context, EncryptStr string, signed string) (result bool) {
 	sysConfig := &SysConfig{}
-	queryOneSysConfig(sysConfig, "select * from sysconfig where configkey=?", "webPriKey")
+	db.First(sysConfig, "config_key=?", "privateKeyStr")
 	if sysConfig.ConfigValue == "" {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 404, Message: "系统没有添加私钥"})
-		ctx.Abort()
+		ctx.JSON(http.StatusNotFound, ErrResponse{Code: 404, Message: "系统没有添加私钥"})
 		return
 	}
 	enn, err := base64.StdEncoding.DecodeString(EncryptStr)
@@ -74,41 +64,125 @@ func checkUserFunc(ctx *gin.Context) {
 	encryptStr, err := DecrptogRSA(enn, initPri(sysConfig.ConfigValue))
 	if err != nil {
 		println(err)
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 413, Message: "密钥错误"})
-		ctx.Abort()
+		ctx.JSON(http.StatusRequestEntityTooLarge, ErrResponse{Code: 413, Message: "密钥错误"})
 		return
 	}
-	if string(encryptStr) != user.encryptStr+TimestampStr {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 400, Message: "密钥错误"})
-		ctx.Abort()
+	data := EncryptData{}
+	err = json.Unmarshal(encryptStr, &data)
+	if err != nil {
+		println(err.Error())
+		ctx.JSON(http.StatusRequestEntityTooLarge, ErrResponse{Code: 413, Message: "token错误"})
 		return
 	}
-	//ctx.Keys = make(map[string]interface{})
-	//ctx.Keys["user"] = user
+	user := &User{}
+	db.First(user, "id=?", data.UserId)
+	if user.UserMd5 == "" {
+		ctx.JSON(http.StatusNotFound, ErrResponse{Code: 404, Message: "用户错误"})
+		return
+	}
+	if RSAVerifySign(initPub(user.UserPubKey), signed, user.EncryptStr+strconv.FormatInt(data.Timestamp, 10)) != nil || time.Now().UnixMilli()-data.Timestamp > 60000 {
+		ctx.JSON(http.StatusBadRequest, ErrResponse{Code: 400, Message: "密钥错误"})
+		return
+	}
 	ctx.Set("user", user)
+	result = true
+	return
+}
+func checkUserFunc(ctx *gin.Context) {
+	jsonParams := make(map[string]interface{})
+
+	err := ctx.BindJSON(&jsonParams)
+	Log.Printf("%v", jsonParams)
+	if err != nil {
+		fmt.Printf("%+v", err)
+		ctx.JSON(http.StatusBadRequest, ErrResponse{Code: 404, Message: "参数错误"})
+		ctx.Abort()
+		return
+	}
+	EncryptStr, _ := jsonParams["EncryptStr"].(string)
+	if EncryptStr == "" {
+		ctx.JSON(http.StatusBadRequest, ErrResponse{Code: 400, Message: "缺少参数"})
+		ctx.Abort()
+		return
+	}
+	signed, _ := jsonParams["Signed"].(string)
+	if signed == "" {
+		ctx.JSON(http.StatusBadRequest, ErrResponse{Code: 400, Message: "缺少参数"})
+		ctx.Abort()
+		return
+	}
+	if !checkUser(ctx, EncryptStr, signed) {
+		ctx.Abort()
+		return
+	}
 	bodyParams, err := json.Marshal(jsonParams)
 	if err != nil {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 500, Message: "写入错误"})
+		ctx.JSON(http.StatusInternalServerError, ErrResponse{Code: 500, Message: "写入错误"})
 		ctx.Abort()
 		return
 	}
 	ctx.Request.Body = ioutil.NopCloser(bytes.NewBuffer(bodyParams))
 }
+func Cors() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		method := c.Request.Method               //请求方法
+		origin := c.Request.Header.Get("Origin") //请求头部
+		var headerKeys []string                  // 声明请求头keys
+		for k := range c.Request.Header {
+			headerKeys = append(headerKeys, k)
+		}
+		headerStr := strings.Join(headerKeys, ", ")
+		if headerStr != "" {
+			headerStr = fmt.Sprintf("access-control-allow-origin, access-control-allow-headers, %s", headerStr)
+		} else {
+			headerStr = "access-control-allow-origin, access-control-allow-headers"
+		}
+		originDomains := []string{"http://test.j.cn"}
+		inArraysFlag := false
+		for _, value := range originDomains {
+			if origin == value {
+				inArraysFlag = true
+				break
+			}
+		}
+
+		if origin != "" && inArraysFlag {
+			// 这是允许访问所有域
+			c.Header("Access-Control-Allow-Origin", origin)
+			//服务器支持的所有跨域请求的方法,为了避免浏览次请求的多次'预检'请求
+			c.Header("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE,UPDATE")
+			//  header的类型
+			c.Header("Access-Control-Allow-Headers", "Authorization, Content-Length, X-CSRF-Token, Token,session,X_Requested_With,Accept, Origin, Host, Connection, Accept-Encoding, Accept-Language,DNT, X-CustomHeader, Keep-Alive, User-Agent, X-Requested-With, If-Modified-Since, Cache-Control, Content-Type, Pragma")
+			// 允许跨域设置 可以返回其他子段
+			c.Header("Access-Control-Expose-Headers", "Content-Length, Access-Control-Allow-Origin, Access-Control-Allow-Headers,Cache-Control,Content-Language,Content-Type,Expires,Last-Modified,Pragma,FooBar") // 跨域关键设置 让浏览器可以解析
+			c.Header("Access-Control-Max-Age", "172800")                                                                                                                                                           // 缓存请求信息 单位为秒
+			c.Header("Access-Control-Allow-Credentials", "false")                                                                                                                                                  //  跨域请求是否需要带cookie信息 默认设置为true
+			c.Set("content-type", "application/json")                                                                                                                                                              // 设置返回格式是json
+		}
+
+		//放行所有OPTIONS方法
+		if method == "OPTIONS" {
+			c.JSON(http.StatusOK, "Options Request!")
+		}
+		// 处理请求
+		c.Next() //  处理请求
+	}
+}
 
 type ErrResponse struct {
-	Code    int
-	Message string
+	Code    int    `json:"code"`
+	Message string `json:"message"`
 }
 type registerResponse struct {
-	Code       int
-	UserId     int64
-	WebPubKey  string
-	EncryptStr string
+	Code       int    `json:"code"`
+	UserId     int64  `json:"userId"`
+	WebPubKey  string `json:"webPubKey"`
+	EncryptStr string `json:"encryptStr"`
 }
 type Response struct {
-	Code    int
-	Message string
-	Data    []interface{}
+	Code    int           `json:"code"`
+	Message string        `json:"message"`
+	Data    []interface{} `json:"data"`
 }
 
 // request Model
@@ -117,62 +191,140 @@ type registerForm struct {
 	EncryptStr string `from:"EncryptStr" binding:"required"`
 }
 type UserDataForm struct {
-	WebKey  string `json:"webKey"`
-	WebData string `json:"fromData"`
+	DataKey string `json:"DataKey"`
+	Value   string `json:"Value"`
 }
 type saveUserDataForm struct {
-	EncryptStr string         `json:"EncryptStr"`
-	Timestamp  string         `json:"Timestamp"`
-	UserId     string         `json:"UserId"`
-	UserData   []UserDataForm `json:"UserData"`
+	DataType string         `json:"DataType"`
+	UserData []UserDataForm `json:"UserData"`
 }
 type WebListForm struct {
 	Name   string `from:"Name" binding:"required"`
-	WebKey string `from:"WebKey" binding:"required"`
+	WebKey string `from:"DataKey" binding:"required"`
 	Icon   string `from:"Icon"`
 }
+type CopyMessageForm struct {
+	Message string `json:"message"`
+	File    bool   `json:"haveFile"`
+	OutTime int64  `json:"outTime"`
+	Public  bool   `json:"public"` //是否公开，不公开需要登录账号
+}
+type EncryptData struct {
+	UserId    int64
+	Timestamp int64
+}
+type GetUserData struct {
+	EncryptStr string
+	DataType   string
+	Version    int64
+}
 
-// model
+// database Model
 type User struct {
-	id         int64
-	encryptStr string
-	userPubKey string
-	usermd5    string
+	Id         int64 `gorm:"primaryKey"`
+	EncryptStr string
+	UserPubKey string
+	UserMd5    string
 }
 type SysConfig struct {
-	ConfigKey   string
+	ConfigKey   string `gorm:"primaryKey"`
 	ConfigValue string
 }
 type WebList struct {
-	Id     int64
-	Name   string
-	WebKey string
-	Icon   string
+	Id     int64  `gorm:"primaryKey" json:"id"`
+	Name   string `json:"name"`
+	WebKey string `json:"webKey"`
+	Icon   string `json:"icon"`
 }
 type UserData struct {
-	id        int64
-	userId    int64
-	webKey    string
-	webData   string
-	timeStamp int64
-	delete    bool
+	Id        int64 `gorm:"primaryKey"`
+	UserId    int64
+	DataType  string // 数据类型
+	DataKey   string
+	Value     string
+	TimeStamp int64
+	Deleted   bool
+}
+type SynchronousMessage struct {
+	Id         int64 `gorm:"primaryKey"`
+	UserId     int64
+	Message    string // 提交的文本内容
+	HaveFile   bool   // 是否提交文件
+	AddTime    int64  // 添加时间
+	ExpireTime int    // 过期时间
+}
+type UserFile struct {
+	Id            int64 `gorm:"primaryKey"`
+	UserId        int64
+	SynchronousId int64  // 同步信息的id
+	FileName      string // 文件原始名
+	FileAgainName string // 文件保存名
+	FilePath      string // 文件地址
+	AddTime       int64  // 添加时间
+	ExpireTime    int    // 过期时间
 }
 
 func init() {
-	db, _ = sql.Open("mysql", "qiangwei:Qiangwei@tcp(101.32.15.231:6603)/mypassword")
+	var err error
+	//dsn := "qiangwei:Qiangwei@tcp(101.32.15.231:6603)/mypassword?charset=utf8mb4&parseTime=True&loc=Local&readTimeout=300s"
+	db, err = gorm.Open(sqlite.Open("passwordData.db"), &gorm.Config{
+		NamingStrategy: schema.NamingStrategy{
+			TablePrefix:   "",
+			SingularTable: true,
+		},
+		//Logger: logger.Default.LogMode(logger.Info),
+	})
+	logFile, err := os.OpenFile("webRun.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatalln("open file error !")
+	}
+	gin.DefaultWriter = logFile
+	gin.DefaultErrorWriter = logFile
+	Log = log.New(logFile, "[dev]", log.LstdFlags)
+	Log.SetOutput(logFile)
+	err = db.AutoMigrate(&User{}, &SysConfig{}, &WebList{}, &UserData{}, SynchronousMessage{}, &UserFile{})
+	if err != nil {
+		Log.Println("创建表错误")
+		return
+	}
+	task := []timeWheel.Task{
+		{Job: func(i interface{}) {
+			s, err := backupSqlite()
+			if err != nil {
+				return
+			}
+			Log.Println("备份完成", s)
+		},
+			JobData: "",
+			Repeat:  true,
+			Crontab: timeWheel.Crontab{Hour: "2", Minute: "30"},
+			JobName: "备份",
+		},
+	}
+	Timer = timeWheel.NewTimeWheel(&timeWheel.WheelConfig{IsRun: true, Log: Log, BeatSchedule: task})
 }
 func main() {
-	app := gin.Default()
-	app.POST("/register", registerView)
-	app.GET("/webList", getWebListView)
-
-	checkUser := app.Use(checkUserFunc)
+	//gin.SetMode(gin.ReleaseMode)
+	defaultApp := gin.Default()
+	defaultApp.Use(func(context *gin.Context) {
+		Log.Println("++++++++++++++++++++++++++++++新请求++++++++++++++++++++++++++++++")
+	})
+	defaultApp.Use(Cors())
+	defaultApp.POST("/register", registerView)
+	defaultApp.GET("/webList", getWebListView)
+	defaultApp.POST("/SaveText", uploadMessageOrFile)
+	defaultApp.GET("/error", getError)
+	defaultApp.POST("/error", postError)
+	defaultApp.GET("/getRandomImageList", getRandomImageList)
+	checkUser := defaultApp.Use(checkUserFunc)
 	{
 		checkUser.POST("/SaveUserData", saveUserDataView)
 		checkUser.POST("/GetUserData", getUserDataView)
 		checkUser.POST("/AppendWebAddress", AppendWebListView)
 	}
-	app.Run(":8080")
+	defaultApp.Use(limits.RequestSizeLimiter(maxFileData))
+	//app.Run(":8080")
+	defaultApp.Run(":5000")
 
 }
 
@@ -180,35 +332,35 @@ func registerView(ctx *gin.Context) {
 	var form registerForm
 
 	if ctx.ShouldBind(&form) != nil {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 404, Message: "参数错误"})
+		ctx.JSON(http.StatusNotFound, ErrResponse{Code: 404, Message: "参数错误"})
 		return
 	}
 	h := md5.New()
 	h.Write([]byte(form.UserPubKey))
 	userMd5 := hex.EncodeToString(h.Sum(nil))
 	var user User
-	queryOneUser(&user, "select * from user where usermd5=?", userMd5)
+	db.First(&user, "user_md5=?", userMd5)
 	sysConfig := &SysConfig{}
-	queryOneSysConfig(sysConfig, "select * from sysconfig where configkey=?", "webPriKey")
+	db.First(sysConfig, "config_key=?", "publicKeyStr")
 	if sysConfig.ConfigValue == "" {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 404, Message: "系统没有添加私钥"})
+		ctx.JSON(http.StatusNotFound, ErrResponse{Code: 404, Message: "系统没有添加密钥"})
 		return
 	}
-	if user.usermd5 != "" {
-		ctx.JSON(http.StatusOK, registerResponse{Code: 200, UserId: user.id, WebPubKey: sysConfig.ConfigValue, EncryptStr: user.encryptStr})
+	if user.Id != 0 {
+		ctx.JSON(http.StatusOK, registerResponse{Code: 200, UserId: user.Id, WebPubKey: sysConfig.ConfigValue, EncryptStr: user.EncryptStr})
 		return
 	}
-	user.usermd5 = userMd5
-	user.encryptStr = form.EncryptStr
-	user.userPubKey = form.UserPubKey
-	saveUser(&user)
-	ctx.JSON(http.StatusOK, registerResponse{Code: 200, UserId: user.id, WebPubKey: sysConfig.ConfigValue, EncryptStr: user.encryptStr})
+	user.UserMd5 = userMd5
+	user.EncryptStr = form.EncryptStr
+	user.UserPubKey = form.UserPubKey
+	db.Create(&user)
+	ctx.JSON(http.StatusOK, registerResponse{Code: 200, UserId: user.Id, WebPubKey: sysConfig.ConfigValue, EncryptStr: user.EncryptStr})
 
 }
 func getWebListView(ctx *gin.Context) {
 	var queryWebList []WebList
-	queryAllWebList(&queryWebList)
-	ctx.JSON(http.StatusOK, map[string]interface{}{"code": 200, "message": "ok", "Data": queryWebList})
+	db.Find(&queryWebList)
+	ctx.JSON(http.StatusOK, map[string]interface{}{"code": 200, "message": "ok", "data": queryWebList})
 }
 func saveUserDataView(ctx *gin.Context) {
 	var (
@@ -219,274 +371,209 @@ func saveUserDataView(ctx *gin.Context) {
 		timeStamp         int64
 		form              saveUserDataForm
 	)
-	binerr := ctx.BindJSON(&form)
-	if binerr != nil {
-		println(binerr.Error())
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 403, Message: "参数错误"})
+	log.Println("处理视图")
+	err := ctx.BindJSON(&form)
+	if err != nil {
+		println(err.Error())
+		ctx.JSON(http.StatusForbidden, ErrResponse{Code: 403, Message: "参数错误"})
 		return
 	}
-
+	log.Printf("%+v\n", form)
 	for _, value := range form.UserData {
-		webKeyList = append(webKeyList, value.WebKey)
+		webKeyList = append(webKeyList, value.DataKey)
 	}
+	user = getRequestUser(ctx)
 
-	data, exist := ctx.Get("user")
-	if !exist {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 500, Message: "写入错误"})
-		return
-	}
-
-	user, ok := data.(*User)
-	if !ok {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 500, Message: "内部错误"})
-		return
-	}
-	println("准备查询数据")
-	// todo 不能传入切片，需要拼接字符串
-	queryUserData(&queryUserDataList, "select * from user_data where user_id=? and web_key=?", user.id, webKeyList)
-	println("查询数据成功")
-	deletedUserData(queryUserDataList)
-	println("更新数据")
+	db.Where("user_id=? AND data_type=? AND data_key IN ?", user.Id, form.DataType, webKeyList).Find(&queryUserDataList)
 	timeStamp = time.Now().Unix()
 	for _, value := range form.UserData {
 		saveUserDtaList = append(saveUserDtaList, UserData{
-			userId:    user.id,
-			webKey:    value.WebKey,
-			webData:   value.WebData,
-			timeStamp: timeStamp,
+			UserId:    user.Id,
+			DataType:  form.DataType,
+			DataKey:   value.DataKey,
+			Value:     value.Value,
+			TimeStamp: timeStamp,
 		})
 	}
-	saveUserData(saveUserDtaList)
+	if len(saveUserDtaList) > 0 {
+		db.Create(&saveUserDtaList)
+	}
+
+	ctx.JSON(http.StatusOK, Response{Code: 200, Message: "ok", Data: []interface{}{}})
 }
 func getUserDataView(ctx *gin.Context) {
-	var queryUserDataList []UserData
-	lastPushTime := ctx.Request.PostFormValue("lastPushTime")
-	user, ok := ctx.Keys["user"].(User)
-	if !ok {
-		panic("")
-	}
+	var (
+		queryUserDataList []UserData
+		jsonData          GetUserData
+	)
 
-	if lastPushTime == "" {
-		queryUserData(&queryUserDataList, "select * from user_data where user_id=?", user.id)
-	} else {
-		queryUserData(&queryUserDataList, "select * from user_data where user_id=? and time_stamp=?", user.id, lastPushTime)
+	err := ctx.BindJSON(&jsonData)
+	if err != nil {
+		fmt.Printf("%+v", err)
+		ctx.JSON(http.StatusBadRequest, ErrResponse{Code: 400, Message: "参数错误"})
+		return
 	}
+	user := getRequestUser(ctx)
 
-	var result map[string]string
+	db.Where("id IN (?)",
+		db.Select("max(id)").Where("user_id=? and data_type=?", user.Id, jsonData.DataType).Group("data_key").Table("user_data"),
+	).Table("user_data").Find(&queryUserDataList)
+	result := make([]map[string]string, 0)
 	for _, value := range queryUserDataList {
-		result[value.webKey] = value.webData
+		result = append(result, map[string]string{"webKey": value.DataKey, "webData": value.Value})
 	}
-	ctx.JSON(http.StatusOK, map[string]interface{}{"Code": 200, "Message": "ok", "Data": result})
+	ctx.JSON(http.StatusOK, map[string]interface{}{"code": 200, "message": "ok", "data": result, "version": jsonData.Version})
 }
 func AppendWebListView(ctx *gin.Context) {
 	var form WebListForm
 
 	if ctx.ShouldBind(&form) != nil {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 404, Message: "参数错误"})
+		ctx.JSON(http.StatusNotFound, ErrResponse{Code: 404, Message: "参数错误"})
 		return
 	}
-	var weblist WebList
-	queryOneWebList(&weblist, "select * from weblist where WebKey=?", form.WebKey)
-	if weblist.Id != 0 {
-		ctx.JSON(http.StatusOK, map[string]interface{}{"Code": 400, "Message": "该网站已添加"})
+	var Web WebList
+	db.First(&Web, "DataKey=?", form.WebKey)
+	if Web.Id != 0 {
+		ctx.JSON(http.StatusBadRequest, map[string]interface{}{"Code": 400, "Message": "该网站已添加"})
 	}
-	weblist.Name = form.Name
-	weblist.WebKey = form.WebKey
-	weblist.Icon = form.Icon
-	saveWebList(&weblist)
-	ctx.JSON(http.StatusOK, map[string]interface{}{"Code": 200, "Message": "ok"})
+	Web.Name = form.Name
+	Web.WebKey = form.WebKey
+	Web.Icon = form.Icon
+	db.Create(&Web)
+	ctx.JSON(http.StatusOK, map[string]interface{}{"code": 200, "message": "ok"})
 }
+func uploadMessageOrFile(ctx *gin.Context) {
+	var (
+		form      CopyMessageForm
+		message   SynchronousMessage
+		fileModel []UserFile
+		err       error
+	)
 
-func queryOneSysConfig(sysConfig *SysConfig, querySql string, args ...interface{}) {
-	err := db.QueryRow(querySql, args...).Scan(&sysConfig.ConfigKey, &sysConfig.ConfigValue)
+	formMessage := ctx.DefaultPostForm("message", "")
+	requestBody := fmt.Sprintf(`{"message":"","haveFile":%s,"outTime":%s,"public":%s}`,
+		ctx.DefaultPostForm("haveFile", "false"),
+		ctx.DefaultPostForm("outTime", "7200"),
+		ctx.DefaultPostForm("public", "false"),
+	)
+	err = json.Unmarshal([]byte(requestBody), &form)
 	if err != nil {
-		panic(err)
-	}
-}
-func queryOneUser(user *User, querySql string, args ...interface{}) {
-	err := db.QueryRow(querySql, args...).Scan(&user.id, &user.encryptStr, &user.userPubKey, &user.usermd5)
-	if err != nil {
+		println(err.Error())
+		println(requestBody)
 		return
 	}
-}
-func queryOneWebList(weblist *WebList, querySql string, args ...interface{}) {
-	err := db.QueryRow(querySql, args...).Scan(&weblist.Id, &weblist.Name, &weblist.WebKey, &weblist.Icon)
-	if err != nil {
-		panic(err)
-	}
-}
-func querySysConfig(sysConfigList *[]SysConfig, querySql string, args ...interface{}) {
-	rows, err := db.Query(querySql, args...)
-	if err != nil {
-		log.Fatal(err)
-		return
-	}
-	defer rows.Close()
-	for rows.Next() {
-		sysConfig := SysConfig{}
-		rows.Scan(&sysConfig.ConfigKey, &sysConfig.ConfigValue)
-		*sysConfigList = append(*sysConfigList, sysConfig)
-	}
-	err = rows.Err()
-	if err != nil {
-		log.Fatal(err)
-	}
+	form.Message = formMessage
 
+	message.Message = form.Message
+	if form.OutTime == 0 {
+		message.ExpireTime = 3600 * 2
+		form.OutTime = 3600 * 2
+	}
+	if form.Public {
+		if !checkUser(ctx, ctx.DefaultPostForm("EncryptStr", ""), ctx.DefaultPostForm("Signed", "")) {
+			ctx.Abort()
+			return
+		}
+		user := getRequestUser(ctx)
+		message.UserId = user.Id
+	}
+	if form.File {
+		// 储存文件
+		//ctx.FormFile("file") // *multipart.FileHeader
+		// 限制上传文件大小
+		ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, maxFileData)
+		// 限制放入内存的文件大小
+		if ctx.Request.ParseMultipartForm(maxFileData) != nil {
+			ctx.JSON(http.StatusBadRequest, gin.H{"msg": "文件读取失败"})
+			return
+		}
+		fileForm, _ := ctx.MultipartForm() // *multipart.Form
+		fmt.Printf("上传文件详情 %+v\n\n", fileForm.File)
+		fileModel, err = savePostUserFiles(fileForm.File["files"], message.UserId, message.ExpireTime)
+		if err != nil {
+			ctx.JSON(http.StatusBadRequest, gin.H{"msg": "文件保存异常" + err.Error()})
+			return
+		}
+		message.HaveFile = true
+	}
+	message.AddTime = time.Now().Unix()
+	db.Create(&message)
+	for _, userFileModel := range fileModel {
+		userFileModel.SynchronousId = message.Id
+		db.Create(&userFileModel)
+	}
+	// 设置删除文件
+	Timer.AppendOnceFunc(removeCopyMessage, "", "", timeWheel.Crontab{
+		ExpiredTime: form.OutTime,
+	})
+	ctx.JSON(http.StatusOK, Response{})
+	ctx.JSON(http.StatusOK, Response{})
 }
-func queryUser(userList *[]User, querySql string, args ...interface{}) {
-	rows, err := db.Query(querySql, args...)
-	if err != nil {
-		log.Fatal(err)
-		return
-	}
-	defer rows.Close()
-	for rows.Next() {
-		user := User{}
-		rows.Scan(&user.id, &user.encryptStr, &user.userPubKey, &user.usermd5)
-		*userList = append(*userList, user)
-	}
-	err = rows.Err()
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-func queryAllWebList(queryWebList *[]WebList) {
-	rows, err := db.Query("select * from weblist")
-	if err != nil {
-		log.Fatal(err)
-		return
-	}
-	defer rows.Close()
-	for rows.Next() {
-		webList := WebList{}
-		rows.Scan(&webList.Id, &webList.Name, &webList.WebKey, &webList.Icon)
-		*queryWebList = append(*queryWebList, webList)
-	}
-	err = rows.Err()
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-func queryUserData(queryUserData *[]UserData, querySql string, args ...interface{}) {
-	rows, err := db.Query(querySql, args...)
-	println("查询")
-	if err != nil {
-		println("查询出错")
-		log.Fatal(err)
-		return
-	}
-	defer rows.Close()
-	for rows.Next() {
-		userData := UserData{}
-		rows.Scan(&userData.id, &userData.userId, &userData.webKey, &userData.webData, &userData.timeStamp, &userData.delete)
-		*queryUserData = append(*queryUserData, userData)
-	}
-	err = rows.Err()
-	if err != nil {
-		log.Fatal(err)
-	}
+func getRandomImageList(ctx *gin.Context) {
+	// 来源网站：煎蛋，instagram, twitter
+	ctx.JSON(200, map[string][]string{
+		"msg": {
+			"http://192.168.111.45/0081ffzKly8h9eorghkayj32c03407wh.jpg",
+			"http://192.168.111.45/0081ffzKly8h9eotamm3jj31jk2bcdlv.jpg",
+			"http://192.168.111.45/699a48a7ly1h0qsgdv68ej221s33zhdv.jpg",
+			"http://192.168.111.45/69618f6fly1h6lkc0f9bcj20r01ewjsh.jpg",
+			"http://192.168.111.45/4886703f9a211808c140d32529149394.jpg",
+			"http://192.168.111.45/008vVelsly1ha6tt89lhnj30cf0jgn0g.jpg",
+			"http://192.168.111.45/008vVelsly1ha6q1g1dxyj30rs2yztud.jpg",
+			"http://192.168.111.45/008vVelsly1ha6prq6bwsj311y1kw1i1.jpg",
+			"http://192.168.111.45/008vVelsly1ha6prk8y1xj316o1kw4mo.jpg",
+			"http://192.168.111.45/008vVelsly1ha6kbkuq5cj30lb0lc418.jpg",
+		},
+	})
 }
 
-func saveUser(user *User) {
-	stmt, err := db.Prepare("insert into user (encryptStr,userPubKey,usermd5) values (?,?,?)")
-	if err != nil {
-		log.Fatal(err)
+// 储存用户上传的文件
+// 保存文件，修改文件名，原始文件名保存到数据库中
+func savePostUserFiles(files []*multipart.FileHeader, userid int64, expireTime int) (result []UserFile, err error) {
+	ti := time.Now()
+	folderPath := fmt.Sprintf("%s\\%d\\%d\\%d", staticFilePath, ti.Year(), ti.Month(), ti.Day())
+	if !filePathExists(folderPath) {
+		err := os.MkdirAll(folderPath, os.ModePerm)
+		if err != nil {
+			print("创建文件夹出错")
+			println(err.Error())
+		}
 	}
-	res, err := stmt.Exec(user.encryptStr, user.userPubKey, user.usermd5)
-	if err != nil {
-		log.Fatal(err)
+	var saveFile []string
+	removeFile := func() {
+		for _, filePath := range saveFile {
+			_ = os.Remove(filePath)
+		}
 	}
-	lastId, err := res.LastInsertId()
-	if err != nil {
-		log.Fatal(err)
+	for _, file := range files {
+		fileUuid := uuid.New()
+		requestFile, err := file.Open()
+		if err != nil {
+			removeFile()
+			return nil, err
+		}
+		filePath := folderPath + "\\" + fileUuid.String()
+		fi, err := os.Create(filePath)
+		if err != nil {
+			removeFile()
+			return nil, err
+		}
+		_, err = io.Copy(fi, requestFile)
+		if err != nil {
+			removeFile()
+			return nil, err
+		}
+		result = append(result, UserFile{
+			UserId:        userid,
+			FileName:      file.Filename,
+			FileAgainName: fileUuid.String(),
+			FilePath:      filePath,
+			AddTime:       ti.Unix(),
+			ExpireTime:    expireTime,
+		})
+		saveFile = append(saveFile, filePath)
 	}
-	user.id = lastId
-}
-func saveWebList(webList *WebList) {
-	stmt, err := db.Prepare("insert into weblist (Name,webkey,Icon) values (?,?,?)")
-	if err != nil {
-		log.Fatal(err)
-	}
-	res, err := stmt.Exec(webList.Name, webList.WebKey, webList.Icon)
-	if err != nil {
-		log.Fatal(err)
-	}
-	lastId, err := res.LastInsertId()
-	if err != nil {
-		log.Fatal(err)
-	}
-	webList.Id = lastId
-}
-func saveUserData(userData []UserData) {
-	// 存放 (?, ?) 的slice
-	valueStrings := make([]string, 0, len(userData))
-	// 存放values的slice
-	valueArgs := make([]interface{}, 0, len(userData)*4)
-	// 遍历users准备相关数据
-	for _, u := range userData {
-		// 此处占位符要与插入值的个数对应
-		valueStrings = append(valueStrings, "(?, ?, ?, ?)")
-		valueArgs = append(valueArgs, u.userId)
-		valueArgs = append(valueArgs, u.webKey)
-		valueArgs = append(valueArgs, u.webData)
-		valueArgs = append(valueArgs, u.timeStamp)
-	}
-	insertSql := fmt.Sprintf("INSERT INTO user_data (user_id, web_key,web_data,time_stamp) VALUES %s",
-		strings.Join(valueStrings, ","))
-
-	stmt, err := db.Prepare(insertSql)
-	if err != nil {
-		log.Fatal(err)
-	}
-	_, err = stmt.Exec(valueArgs...)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-}
-
-func deletedUserData(UserDataList []UserData) (rowCnt int64) {
-	// 存放 (?, ?) 的slice
-	valueStrings := make([]string, 0, len(UserDataList))
-
-	var userIdList []int64
-	for _, value := range UserDataList {
-		valueStrings = append(valueStrings, "?")
-		userIdList = append(userIdList, value.userId)
-	}
-	updateSql := fmt.Sprintf("Update User_data set delete=true where Id in (%s)", strings.Join(valueStrings, ","))
-	stmt, err := db.Prepare(updateSql)
-	if err != nil {
-		log.Fatal(err)
-	}
-	res, err := stmt.Exec(userIdList)
-	if err != nil {
-		log.Fatal(err)
-	}
-	rowCnt, err = res.RowsAffected()
-	return
-}
-
-func getInt(data interface{}) int {
-	a, ok := data.(int)
-	if !ok {
-		panic("类型错误，无法转换成int类型")
-	}
-	return a
-}
-func getString(data interface{}) string {
-	b, ok := data.([]byte)
-	if !ok {
-		panic("类型错误，无法转换成string类型")
-	}
-	return string(b)
-}
-func getBoll(data interface{}) bool {
-	a := getInt(data)
-	if a == 0 {
-		return false
-	}
-	return true
+	return result, nil
 }
 
 func loadKey(pubPath string, priPath string) (PubKey *rsa.PublicKey, PriKey *rsa.PrivateKey, err error) {
@@ -591,7 +678,7 @@ func initPri(PriStr string) (PriKey *rsa.PrivateKey) {
 	return
 }
 
-//使用公钥加密
+// EncyptogRSAPub 使用公钥加密
 func EncyptogRSAPub(src []byte, pubKey *rsa.PublicKey) (res []byte, err error) {
 	//4.使用公钥加密数据
 	maxLength := pubKey.Size()
@@ -604,7 +691,6 @@ func EncyptogRSAPub(src []byte, pubKey *rsa.PublicKey) (res []byte, err error) {
 		}
 		inputData := src[:length]
 		src = src[length:]
-
 		result, err := rsa.EncryptPKCS1v15(rand.Reader, pubKey, inputData)
 		if err != nil {
 			return nil, err
@@ -644,7 +730,7 @@ func EncyptogRSAPub(src []byte, pubKey *rsa.PublicKey) (res []byte, err error) {
 //	return
 //}
 
-//使用私钥解密
+// DecrptogRSA 使用私钥解密
 func DecrptogRSA(src []byte, privateKey *rsa.PrivateKey) (res []byte, err error) {
 	maxLength := privateKey.Size()
 	length := 0
@@ -678,3 +764,138 @@ func DecrptogRSA(src []byte, privateKey *rsa.PrivateKey) (res []byte, err error)
 //
 //	return
 //}
+
+// RSASign 签名验签的时候对签名字符串进行hash处理的时候需要使用一至的hash类型
+func RSASign(privateKey *rsa.PrivateKey, signStr string) (string, error) {
+	hashSHA256 := sha256.New()
+	hashSHA256.Write([]byte(signStr))
+	Digest := hashSHA256.Sum(nil)
+	sign, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.Hash(0), Digest)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(sign), nil
+}
+
+// RSAVerifySign signData 密文，signStr 明文
+func RSAVerifySign(pubKey *rsa.PublicKey, signData string, signStr string) error {
+	sign, err := base64.StdEncoding.DecodeString(signData)
+	if err != nil {
+		return err
+	}
+	hash := sha256.New()
+	hash.Write([]byte(signStr))
+	return rsa.VerifyPKCS1v15(pubKey, crypto.SHA256, hash.Sum(nil), sign)
+}
+
+// FirstLower 字符串首字母小写
+func FirstLower(s string) string {
+	if s == "" {
+		return ""
+	}
+	return strings.ToLower(s[:1]) + s[1:]
+}
+func getRequestUser(ctx *gin.Context) (user *User) {
+	data, ok := ctx.Get("user")
+	if !ok {
+		ctx.JSON(http.StatusInternalServerError, ErrResponse{Code: 500, Message: "写入错误"})
+		ctx.Abort()
+	}
+
+	user, ok = data.(*User)
+	if !ok {
+		ctx.JSON(http.StatusInternalServerError, ErrResponse{Code: 500, Message: "内部错误"})
+		ctx.Abort()
+	}
+
+	return
+}
+func filePathExists(path string) bool {
+	_, err := os.Stat(path) //os.Stat获取文件信息
+	if err != nil {
+		if os.IsExist(err) {
+			return true
+		}
+		return false
+	}
+	return true
+}
+func fileExist(path string) bool {
+	//err := syscall.Access(path, syscall.F_OK)
+	//return !os.IsNotExist(err)
+	return false
+}
+
+// 定时删除用户同步的数据
+func removeCopyMessage(data interface{}) {
+
+}
+
+func getError(ctx *gin.Context) {
+	println(ctx.Query("msg"))
+}
+func postError(ctx *gin.Context) {
+	a := map[string]string{}
+	ctx.BindJSON(&a)
+	fmt.Printf("%v\n", a)
+}
+
+// 备份
+func backupSqlite() (string, error) {
+	ctx := context.Background()
+	// 备份到临时文件
+
+	filePath := fmt.Sprintf(`serverSqliteDb-*-%s.db`, time.Now().Format("2006-01-02"))
+	// 目的数据库
+	dstDB, err := sql.Open(`sqlite3`, filePath)
+	if err != nil {
+		return ``, err
+	}
+	defer dstDB.Close()
+
+	dstConn, err := dstDB.Conn(ctx)
+	if err != nil {
+		return ``, err
+	}
+	defer dstConn.Close()
+
+	if err := dstConn.Raw(func(dstDC interface{}) error {
+		rawDstConn := dstDC.(*sqlite3.SQLiteConn)
+
+		s := db.ConnPool.(*sql.DB)
+		srcConn, err := s.Conn(ctx)
+		// 源数据库
+		//srcConn, err := s.db.Conn(ctx)
+		if err != nil {
+			return err
+		}
+		defer srcConn.Close()
+
+		if err := srcConn.Raw(func(srcDC interface{}) error {
+			rawSrcConn := srcDC.(*sqlite3.SQLiteConn)
+
+			// 备份函数调用
+			backup, err := rawDstConn.Backup(`main`, rawSrcConn, `main`)
+			if err != nil {
+				return err
+			}
+
+			// errors can be safely ignored.
+			_, _ = backup.Step(-1)
+
+			if err := backup.Close(); err != nil {
+				return err
+			}
+
+			return nil
+		}); err != nil {
+			return err
+		}
+
+		return nil
+	}); err != nil {
+		return ``, err
+	}
+
+	return filePath, nil
+}
