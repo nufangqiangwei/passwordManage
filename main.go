@@ -288,18 +288,18 @@ func init() {
 		return
 	}
 	task := []timeWheel.Task{
-		//{Job: func(i interface{}) {
-		//	s, err := backupSqlite()
-		//	if err != nil {
-		//		return
-		//	}
-		//	Log.Println("备份完成", s)
-		//},
-		//	JobData: "",
-		//	Repeat:  true,
-		//	Crontab: timeWheel.Crontab{Hour: "2", Minute: "30"},
-		//	JobName: "备份",
-		//},
+		{Job: func(i interface{}) {
+			s, err := backupSqlite()
+			if err != nil {
+				return
+			}
+			Log.Println("备份完成", s)
+		},
+			JobData: "",
+			Repeat:  true,
+			Crontab: timeWheel.Crontab{Hour: "2", Minute: "30"},
+			JobName: "备份",
+		},
 	}
 	Timer = timeWheel.NewTimeWheel(&timeWheel.WheelConfig{IsRun: true, Log: Log, BeatSchedule: task})
 }
@@ -845,14 +845,9 @@ func backupSqlite() (string, error) {
 	ctx := context.Background()
 	// 备份到临时文件
 
-	tmpFile, err := ioutil.TempFile(``, fmt.Sprintf(`serverSqliteDb-*-%s.db`, time.Now().Format("2006-01-02")))
-	if err != nil {
-		return ``, err
-	}
-	tmpFile.Close()
-
+	filePath := fmt.Sprintf(`serverSqliteDb-*-%s.db`, time.Now().Format("2006-01-02"))
 	// 目的数据库
-	dstDB, err := sql.Open(`sqlite3`, tmpFile.Name())
+	dstDB, err := sql.Open(`sqlite3`, filePath)
 	if err != nil {
 		return ``, err
 	}
@@ -902,5 +897,5 @@ func backupSqlite() (string, error) {
 		return ``, err
 	}
 
-	return tmpFile.Name(), nil
+	return filePath, nil
 }
