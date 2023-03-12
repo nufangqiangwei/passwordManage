@@ -2,6 +2,8 @@ package main
 
 import (
 	"crypto/md5"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -15,45 +17,53 @@ import (
 )
 
 const pub_1024 = `-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtHMaK0Pq+04kv3hmjUdY
-V7N1UACTTpqpC0bWSM/cClzrupB1JLsWfxHpab8T7rAS+sXdqcklH1zhnvgrtkWn
-sCiEb5ONAfBrIy0raBaPHxKhFNtJOtveWmTcDGOfY6HcRrF+Smrexowih+TmVDs+
-aFNYF2TjRSxukkW3HMqCb9sohx4csWnnBbt8PJE1vjUUPlKGBtaQTkpcHgqRFVPX
-5ni/LQ2STYlBLM+fQuvebRvTjNO9U93TKp6LtjrQHh4ouKHWN9nDIKY483n7pOw3
-tb2Ea5awTHiNg53WJnwwyWPNdWta6O1Z0otykrUU34jQs/CAbH6VtFjIP/vNGfsF
-jwIDAQAB
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAueCsckXrWhnTk9WsHo7l
+dlfoA0OMRRjp6/Gyu39G/Lbln3jsYwDhhW0b4t+xyUABH9DQX+LTb023y0OWqKtP
+iJguyd+PqE2Zzqo4iDfJmd6zj6x6ScMJmVhZtiNVJ2unQXj5p6iVPhnBQi95NtY8
+ODhvpyEIifUM5d7v2Y/VQEoqv4BE548XPqpTci0qGHXkSgW30WyOpQJoQO6XbhFS
+5fCNKZgioJy6ECu6WIk8FHa12RsA5rXbdDlE4Ru32kO+V283svtd4tBW7sZsEq3b
+DmwtgVk3DL7kwhSn3EmbtwDHLrbiRESUb8MzXKml7GPNSLHhAOEcATSjGjzlhO41
+QQIDAQAB
 -----END PUBLIC KEY-----`
 
 const pri_1024 = `-----BEGIN PRIVATE KEY-----
-MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC0cxorQ+r7TiS/
-eGaNR1hXs3VQAJNOmqkLRtZIz9wKXOu6kHUkuxZ/EelpvxPusBL6xd2pySUfXOGe
-+Cu2RaewKIRvk40B8GsjLStoFo8fEqEU20k6295aZNwMY59jodxGsX5Kat7GjCKH
-5OZUOz5oU1gXZONFLG6SRbccyoJv2yiHHhyxaecFu3w8kTW+NRQ+UoYG1pBOSlwe
-CpEVU9fmeL8tDZJNiUEsz59C695tG9OM071T3dMqnou2OtAeHii4odY32cMgpjjz
-efuk7De1vYRrlrBMeI2DndYmfDDJY811a1ro7VnSi3KStRTfiNCz8IBsfpW0WMg/
-+80Z+wWPAgMBAAECggEAJLShJxnaq6HaocQJAEX592T+wPZNAJk/N5cCMa9ucAE0
-xi9qVL1ltxVaqHMAx/Wy9qXXEBllXrrS/jY3Fg2XLaMgRV37OeDAulgO0057cHOm
-popwm/NriHGpvS9qlaawGwUxzkts43BP+dqa65ldeXUynxebj0+ZclGSDN44qC3R
-sdaDXyQRR8De7tAcEYHGvp3N6HhSvJ25ITWohJ2r+K548C56BbFvMfY43UnhfMgh
-QTsskCeyrgchJg5Wp1oNdnaGVrMHwQEU9g6SuSDlDq4TIDDN6zoNyhFQbTA+6Hr0
-71C+ShpB3UzhwJelDvj8ZLMrtPepVuREbMtv27A6KQKBgQDlVjRqp0xdxmvcZ3mI
-N/cU4Dx3ktRoNxtljNyBPHdG0di9Neqw2KUSB8D/eHioLMzgoPlMOaY6Z46/nb5w
-SYUEAkng1bjDwOGIH4WnBZUmIKdCkMOar3Y8x2d13lhItO9Ixgv6GH7icvIjhzgL
-fG7crjBaarfxR9AC11IldKO8rQKBgQDJbdw/xFdUhLCberOSr3mK1YBWRLmt3MIL
-7Ctl2ow/OqOgDdiKYqOupcACS1QlKqxuH4VzoYTfzOqse70YYXXjvMbmcFURgFwN
-Yq7Hu6wi0OI4SVJwYxKyDjVx4bJWBj9MPbu3LLZdQ+6DWIFnDJvMn4oaNqK+zHtX
-hqk4SH22qwKBgQCpydC0xXd8VdK1MsZ/Wy/KfNlHjaVEIshdvpPh+mo0PFhCfRBs
-LXjIiIUSnpZ1q/ViuMrY7DVtOA4vPxIm/8dC2I7prlFEXCCdLvk8Vp29xJ8QYSzv
-8MeQ5/BpC1xBN/OP5VAosMn/zSoHs6yClHVfXHbf+fKE563Q7KkcoeY3YQKBgB4R
-dzpRndOxBwf+lgXEifkui7zU/36zoIfVFlla+WqK31gKGRP3S4XLmlD9W688oobB
-z9MF/mbGGRXsVrrn+YgoauyFQj2dkqAw5fRM0JJV6h8K2vKJ54WK13GLhmqO/i3s
-XTQnyYU8mcMjmBWA7VTrT9s/4qVmstbK9EHBmHqHAoGAHnSVyffqzQO4dF4r0KJ1
-5NONYRl/nL3PJl8dI7q1xOrNQ4peoeOQkYi3WZ9jJS2pfm//F6yvn5X9bWq0nDFe
-dmAgHGaKaPtdRvIDDTYHBFT9Cb56hJ8e+2DfSPHW3VjfMtxhs1KBNCo7cDezLHUM
-5ZR/ozG5r+GjGRf/DfHONe8=
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC54KxyRetaGdOT
+1awejuV2V+gDQ4xFGOnr8bK7f0b8tuWfeOxjAOGFbRvi37HJQAEf0NBf4tNvTbfL
+Q5aoq0+ImC7J34+oTZnOqjiIN8mZ3rOPrHpJwwmZWFm2I1Una6dBePmnqJU+GcFC
+L3k21jw4OG+nIQiJ9Qzl3u/Zj9VASiq/gETnjxc+qlNyLSoYdeRKBbfRbI6lAmhA
+7pduEVLl8I0pmCKgnLoQK7pYiTwUdrXZGwDmtdt0OUThG7faQ75Xbzey+13i0Fbu
+xmwSrdsObC2BWTcMvuTCFKfcSZu3AMcutuJERJRvwzNcqaXsY81IseEA4RwBNKMa
+POWE7jVBAgMBAAECggEBAJCVC24DpvK5vhJzFOPcIO5xqD3Jr/UbUPE/WthvQydV
+mLz30V+dEs63NQa/G0pAZ994jGzZQb+FA16vXyQpxL6qKVLLe7HdUrMnQrvqMP1n
+9eHetmxjsja+O2Hqj9UO7tWFpSPdhOD+JY424SFfeQ3+EBM/JaYxn2u6gnSHZcgP
+09cM6OOG6KzUjYNwZ5mU0hBr0aUlZ3eerxXcw/FmLl3FPp6+kQ3sRjj03DPvUk1J
+Vf+YEnlnCws8R5fCWfxthDURPL3xqlChpFSKzDLhtyempsBNXmrEEG2aEkWQDxZW
+gN4ceTz2VZ0BOO8k9cfs7NyaVzH9tDn5IfTRAh7GZ9UCgYEA7920T+4r4tQmU15H
+Vqdl2JxZjHsDdDY/bUltLtijYIEwDQGbmxyaLY0bzLoGO1zTmHKFtiTS1M+eoeS9
+pxd8YcZddsmGVzH+ugvEe7momgQLyGEBqZbZuWppPoA0P7Tb171n41jmwe+dlkWd
+WCzUw58zBHp+wwnUbtyz2X6JGZMCgYEAxmFVXFZRe0aohxX2UAOouO1BSyBMtN17
+rmfXLEziBMD3LUKciYrDQep44nEH8MzKhmsgqzHtXmdheoOsCpcPkqtd3bOQvEuR
+adVeFiTajtPXCOUVU1Yx2Oj8KKy/hGwjUoBAgDr9jNIE86FPj+B6hPn+wm37v+Qm
+d8t72EQAKlsCgYAzy+RL/lpruPQtvIYbKDrN87VCqK2uQqifqONy4kUlacA+jsJT
+VHHWtEn0g5ck6n6mxNQq6Pi+C7dtrj9l/aRWWMeGBy6DVcBz3GapcQX/fDAvLQN2
+46RQbbIcVQLzXtK6W6Q7a88owd19vbqkd8naFF6n8Ou+ojjFV9Nee/yPEQKBgD+z
+OWmw/fELu0nFL5Z51k+rP3AUKw1YoUJbbah394t3Oud5oDI6MICV/cMYcGhOGioX
+dCIEoifSImboqPGtl/6MsFNkOXF9AnBtZwzNQLDkLQRaKwLbhp4UEgQtlEG9R4pS
+TGPgjVIOjjB898NHXZAdhkSAdHollISa/mVvUG5JAoGAKSEYpn1eILMSESKjJXi0
+xvaThRnJzRSHM4OmFRsyrY/crts0JYHCt5tAAm+6CdB+CYGgB31tcd1ixBJ3SU6W
+9h+FuP7qtQ5kQ9S7j5LxzJSK5yb5WkFFLT/j4BuVoI+0sxxkgoA8dmb2cNURRPK+
+VrhAegWp3ToX4IqUcw8cyWs=
 -----END PRIVATE KEY-----`
 
-const user_pub = `-----BEGIN PUBLIC KEY-----MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1xsatShmgsXGJZcrmWLAUm3xQlJXr4E5vHcQZPZwEREWpmW1rsJdOeWAkz1hImXfrOXk1+f719nWIr3rjvPhgkPoOoYpXZSgHGgESnfVAO1PWwFtr9/5TpTwEM8c+ZBwJoEc5fGMrf/NkiLfoecdzx/5xWqF+Hd4SNbuqq1+03+Vlh2kyTHBwlb3wYl7mOPTSfQd1QriqIFI6CoVHydnl7qXs2iHeGG/eV/JRW5H5/pl5VXFfJR9hQjO+YE07zSQVi9HhV1UC+cvdfmIBRQ+Uqi6wFux5rtAQVIPAkk1WbMFOVkXfdc+eAtKsky65VouNb0oIbNmiicRPJCx3NtSyQIDAQAB-----END PUBLIC KEY-----`
+const user_pub = `-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6+BLTc0Xez1mczTNZIxl
+my8byyHQiVPIebQTA1R07gypj6+W67T7VVeuTnH6VeuttMT3cqido9KIGJAv9g5m
+YnJnhcBaR1a/LSpwDxxCXNd7u5fGTnSt4qKqk4vCOPcLFA/3QO6KlLkTARh9+YI6
+6SGymi+RF2XrrePnrzlVqNmEAsJAAOAbIOEeNmje7Ku4LBcPM1cNEAf1ZNsuN0NL
+Stwa5IqQomJnXLlANm2fLs6g6X2ZBApdaXn8oHVValiIi5FlDgzKrTVpVA6g9ghO
+NJSSuEnHeI8CfexPX2b2pcokLSx+EgfxZlPQnSZ8UKah4YGsTPHmvu7wnsuY0oFZ
+IwIDAQAB
+-----END PUBLIC KEY-----`
 
 func TestAddAsset(t *testing.T) {
 	param := map[string]string{
@@ -199,7 +209,7 @@ func TestTime(t *testing.T) {
 }
 
 func TestSign(t *testing.T) {
-	signStr := "qwertyuikjhgfdsa"
+	signStr := "JJDdjIJRq2"
 	pri := initPri(pri_1024)
 	pub := initPub(pub_1024)
 	a, err := RSASign(pri, signStr)
@@ -214,8 +224,41 @@ func TestSign(t *testing.T) {
 }
 
 func TestUserSign(t *testing.T) {
-	signStr := "q1+03+Vlh2k"
+	signStr := "JJDdjIJRq2"
 	pub := initPub(user_pub)
-	a := "AYLbe1Wa/ZzrwR5PBpsb5dVGGPy7fY/LNzh6fVE/QyJrqYivmjFLGe3ZUAd/7zrDCc38Pj11qa76nhnVlkxhL18fskkZI051E9txLoAvdNwemL1/SiJBl7Hdzr37F/r/B18CfqmbuCernVh5BS3BOpPPNqqmxmlcX/xd43r6Zkm98C588PgAbbXr7Vaqcd0b3Nx30RgpIfDvSTBFt9SvehUBfzufGNn6+Z7KyhAYoP3lY6y1f4Bmmk/B0xfyacN8HgudiQEjqrwTM5Bk8prKq56D+wrQepD2pvyNP/95BrxCyP/uI+z08mk2JVq9wUJAcs5xs9ACl7UJmrhdnLpamg=="
+	a := "RHE68MupKBd7tqqiO83IxsvQWZBzEQk8MHNZ69RTcmObkxPfTp0vBDbhgMzZSxnUvbNbDzgXo65BEKYddgcm2+0A1j2thipYQxlhz11iv8vXnt9RUrHkjCPIa3e4inAjn2umrDliM81vDWu0Vju8b4mqd9w0SrojrmlEHpfXgv86bS4jzGDV+3T6vDtxBbpgvC3rvKzryYwjqRnlw1vAOstQebpFnxj1NXMdQTXJyxDaPT8MaCwfdGXq/hriMfPwTGaoTGVQpxlNAJhCOzt7L44OeyT/8eLpFf5psDKDa6zGfjjpWZmhkse059lN/j+EGc9ClMbJ2uTYcBVio8VE5A=="
 	println(RSAVerifySign(pub, a, signStr) != nil)
+}
+
+func TestBase64Str(t *testing.T) {
+	str := []byte{
+		0, 13, 14, 19, 4, 67, 20,
+	}
+	println(base64.StdEncoding.EncodeToString(str))
+	signStr := "JJDdjIJRq2"
+	a := []byte(signStr)
+	fmt.Printf("%v\n", a)
+	hashMD5 := md5.New()
+	hashMD5.Write(a)
+	Digest := hashMD5.Sum(nil)
+	fmt.Printf("%v\n", Digest)
+	r := []rune(signStr)
+	fmt.Printf("%v\n", r)
+}
+
+func TestRSAEncryption(t *testing.T) {
+	dataStr := "JJDdjIJRq2"
+	dataStrHash := []byte{198, 58, 7, 70, 190, 170, 40, 178, 60, 142, 131, 255, 36, 187, 67, 55, 115, 112, 225, 104, 214, 208, 167, 249, 43, 171, 235, 209, 193, 26, 39, 18}
+	hashSHA256 := sha256.New()
+	hashSHA256.Write([]byte(dataStr))
+	Digest := hashSHA256.Sum(nil)
+	fmt.Printf("%v\n", Digest)
+	fmt.Printf("%v\n", dataStrHash)
+	pri := initPri(pri_1024)
+	a, err := RSASign(pri, dataStr)
+	if err != nil {
+		println(err.Error())
+
+	}
+	println(a)
 }

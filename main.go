@@ -7,7 +7,7 @@ import (
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha1"
+	"crypto/sha256"
 	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
@@ -29,6 +29,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -53,7 +54,7 @@ func checkUser(ctx *gin.Context, EncryptStr string, signed string) (result bool)
 	sysConfig := &SysConfig{}
 	db.First(sysConfig, "config_key=?", "privateKeyStr")
 	if sysConfig.ConfigValue == "" {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 404, Message: "系统没有添加私钥"})
+		ctx.JSON(http.StatusNotFound, ErrResponse{Code: 404, Message: "系统没有添加私钥"})
 		return
 	}
 	enn, err := base64.StdEncoding.DecodeString(EncryptStr)
@@ -63,25 +64,24 @@ func checkUser(ctx *gin.Context, EncryptStr string, signed string) (result bool)
 	encryptStr, err := DecrptogRSA(enn, initPri(sysConfig.ConfigValue))
 	if err != nil {
 		println(err)
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 413, Message: "密钥错误"})
+		ctx.JSON(http.StatusRequestEntityTooLarge, ErrResponse{Code: 413, Message: "密钥错误"})
 		return
 	}
 	data := EncryptData{}
 	err = json.Unmarshal(encryptStr, &data)
 	if err != nil {
 		println(err.Error())
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 413, Message: "token错误"})
+		ctx.JSON(http.StatusRequestEntityTooLarge, ErrResponse{Code: 413, Message: "token错误"})
 		return
 	}
 	user := &User{}
 	db.First(user, "id=?", data.UserId)
 	if user.UserMd5 == "" {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 404, Message: "用户错误"})
+		ctx.JSON(http.StatusNotFound, ErrResponse{Code: 404, Message: "用户错误"})
 		return
 	}
-	println(user.UserPubKey)
-	if RSAVerifySign(initPub(user.UserPubKey), signed, user.EncryptStr) != nil || time.Now().UnixMilli()-data.Timestamp > 60000 {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 400, Message: "密钥错误"})
+	if RSAVerifySign(initPub(user.UserPubKey), signed, user.EncryptStr+strconv.FormatInt(data.Timestamp, 10)) != nil || time.Now().UnixMilli()-data.Timestamp > 60000 {
+		ctx.JSON(http.StatusBadRequest, ErrResponse{Code: 400, Message: "密钥错误"})
 		return
 	}
 	ctx.Set("user", user)
@@ -92,6 +92,7 @@ func checkUserFunc(ctx *gin.Context) {
 	jsonParams := make(map[string]interface{})
 
 	err := ctx.BindJSON(&jsonParams)
+	Log.Printf("%v", jsonParams)
 	if err != nil {
 		fmt.Printf("%+v", err)
 		ctx.JSON(http.StatusBadRequest, ErrResponse{Code: 404, Message: "参数错误"})
@@ -100,13 +101,13 @@ func checkUserFunc(ctx *gin.Context) {
 	}
 	EncryptStr, _ := jsonParams["EncryptStr"].(string)
 	if EncryptStr == "" {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 400, Message: "缺少参数"})
+		ctx.JSON(http.StatusBadRequest, ErrResponse{Code: 400, Message: "缺少参数"})
 		ctx.Abort()
 		return
 	}
 	signed, _ := jsonParams["Signed"].(string)
 	if signed == "" {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 400, Message: "缺少参数"})
+		ctx.JSON(http.StatusBadRequest, ErrResponse{Code: 400, Message: "缺少参数"})
 		ctx.Abort()
 		return
 	}
@@ -116,7 +117,7 @@ func checkUserFunc(ctx *gin.Context) {
 	}
 	bodyParams, err := json.Marshal(jsonParams)
 	if err != nil {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 500, Message: "写入错误"})
+		ctx.JSON(http.StatusInternalServerError, ErrResponse{Code: 500, Message: "写入错误"})
 		ctx.Abort()
 		return
 	}
@@ -194,9 +195,8 @@ type UserDataForm struct {
 	Value   string `json:"Value"`
 }
 type saveUserDataForm struct {
-	EncryptStr string         `json:"EncryptStr"`
-	DataType   string         `json:"DataType"`
-	UserData   []UserDataForm `json:"UserData"`
+	DataType string         `json:"DataType"`
+	UserData []UserDataForm `json:"UserData"`
 }
 type WebListForm struct {
 	Name   string `from:"Name" binding:"required"`
@@ -278,8 +278,8 @@ func init() {
 	if err != nil {
 		log.Fatalln("open file error !")
 	}
-	//gin.DefaultWriter = logFile
-	//gin.DefaultErrorWriter = logFile
+	gin.DefaultWriter = logFile
+	gin.DefaultErrorWriter = logFile
 	Log = log.New(logFile, "[dev]", log.LstdFlags)
 	Log.SetOutput(logFile)
 	err = db.AutoMigrate(&User{}, &SysConfig{}, &WebList{}, &UserData{}, SynchronousMessage{}, &UserFile{})
@@ -287,21 +287,21 @@ func init() {
 		Log.Println("创建表错误")
 		return
 	}
-	Timer = timeWheel.NewTimeWheel(&timeWheel.WheelConfig{IsRun: true, Log: Log, BeatSchedule: []timeWheel.Task{
-		{Job: func(i interface{}) {
-			s, err := backupSqlite()
-			if err != nil {
-				return
-			}
-			Log.Println("备份完成", s)
-		},
-			JobData: "",
-			Repeat:  true,
-			Crontab: timeWheel.Crontab{Hour: "2", Minute: "30"},
-			JobName: "备份",
-		},
-	},
-	})
+	task := []timeWheel.Task{
+		//{Job: func(i interface{}) {
+		//	s, err := backupSqlite()
+		//	if err != nil {
+		//		return
+		//	}
+		//	Log.Println("备份完成", s)
+		//},
+		//	JobData: "",
+		//	Repeat:  true,
+		//	Crontab: timeWheel.Crontab{Hour: "2", Minute: "30"},
+		//	JobName: "备份",
+		//},
+	}
+	Timer = timeWheel.NewTimeWheel(&timeWheel.WheelConfig{IsRun: true, Log: Log, BeatSchedule: task})
 }
 func main() {
 	//gin.SetMode(gin.ReleaseMode)
@@ -332,7 +332,7 @@ func registerView(ctx *gin.Context) {
 	var form registerForm
 
 	if ctx.ShouldBind(&form) != nil {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 404, Message: "参数错误"})
+		ctx.JSON(http.StatusNotFound, ErrResponse{Code: 404, Message: "参数错误"})
 		return
 	}
 	h := md5.New()
@@ -343,7 +343,7 @@ func registerView(ctx *gin.Context) {
 	sysConfig := &SysConfig{}
 	db.First(sysConfig, "config_key=?", "publicKeyStr")
 	if sysConfig.ConfigValue == "" {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 404, Message: "系统没有添加密钥"})
+		ctx.JSON(http.StatusNotFound, ErrResponse{Code: 404, Message: "系统没有添加密钥"})
 		return
 	}
 	if user.Id != 0 {
@@ -371,23 +371,25 @@ func saveUserDataView(ctx *gin.Context) {
 		timeStamp         int64
 		form              saveUserDataForm
 	)
+	log.Println("处理视图")
 	err := ctx.BindJSON(&form)
 	if err != nil {
 		println(err.Error())
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 403, Message: "参数错误"})
+		ctx.JSON(http.StatusForbidden, ErrResponse{Code: 403, Message: "参数错误"})
 		return
 	}
-
+	log.Printf("%+v\n", form)
 	for _, value := range form.UserData {
 		webKeyList = append(webKeyList, value.DataKey)
 	}
 	user = getRequestUser(ctx)
 
-	db.Where("user_id=?", user.Id).Where("web_key IN ?", webKeyList).Find(&queryUserDataList)
+	db.Where("user_id=? AND data_type=? AND data_key IN ?", user.Id, form.DataType, webKeyList).Find(&queryUserDataList)
 	timeStamp = time.Now().Unix()
 	for _, value := range form.UserData {
 		saveUserDtaList = append(saveUserDtaList, UserData{
 			UserId:    user.Id,
+			DataType:  form.DataType,
 			DataKey:   value.DataKey,
 			Value:     value.Value,
 			TimeStamp: timeStamp,
@@ -408,7 +410,7 @@ func getUserDataView(ctx *gin.Context) {
 	err := ctx.BindJSON(&jsonData)
 	if err != nil {
 		fmt.Printf("%+v", err)
-		ctx.JSON(http.StatusBadRequest, ErrResponse{Code: 404, Message: "参数错误"})
+		ctx.JSON(http.StatusBadRequest, ErrResponse{Code: 400, Message: "参数错误"})
 		return
 	}
 	user := getRequestUser(ctx)
@@ -426,13 +428,13 @@ func AppendWebListView(ctx *gin.Context) {
 	var form WebListForm
 
 	if ctx.ShouldBind(&form) != nil {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 404, Message: "参数错误"})
+		ctx.JSON(http.StatusNotFound, ErrResponse{Code: 404, Message: "参数错误"})
 		return
 	}
 	var Web WebList
 	db.First(&Web, "DataKey=?", form.WebKey)
 	if Web.Id != 0 {
-		ctx.JSON(http.StatusOK, map[string]interface{}{"Code": 400, "Message": "该网站已添加"})
+		ctx.JSON(http.StatusBadRequest, map[string]interface{}{"Code": 400, "Message": "该网站已添加"})
 	}
 	Web.Name = form.Name
 	Web.WebKey = form.WebKey
@@ -763,10 +765,11 @@ func DecrptogRSA(src []byte, privateKey *rsa.PrivateKey) (res []byte, err error)
 //	return
 //}
 
+// RSASign 签名验签的时候对签名字符串进行hash处理的时候需要使用一至的hash类型
 func RSASign(privateKey *rsa.PrivateKey, signStr string) (string, error) {
-	hashMD5 := md5.New()
-	hashMD5.Write([]byte(signStr))
-	Digest := hashMD5.Sum(nil)
+	hashSHA256 := sha256.New()
+	hashSHA256.Write([]byte(signStr))
+	Digest := hashSHA256.Sum(nil)
 	sign, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.Hash(0), Digest)
 	if err != nil {
 		return "", err
@@ -780,9 +783,9 @@ func RSAVerifySign(pubKey *rsa.PublicKey, signData string, signStr string) error
 	if err != nil {
 		return err
 	}
-	hash := sha1.New()
+	hash := sha256.New()
 	hash.Write([]byte(signStr))
-	return rsa.VerifyPKCS1v15(pubKey, crypto.SHA1, hash.Sum(nil), sign)
+	return rsa.VerifyPKCS1v15(pubKey, crypto.SHA256, hash.Sum(nil), sign)
 }
 
 // FirstLower 字符串首字母小写
@@ -795,13 +798,13 @@ func FirstLower(s string) string {
 func getRequestUser(ctx *gin.Context) (user *User) {
 	data, ok := ctx.Get("user")
 	if !ok {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 500, Message: "写入错误"})
+		ctx.JSON(http.StatusInternalServerError, ErrResponse{Code: 500, Message: "写入错误"})
 		ctx.Abort()
 	}
 
 	user, ok = data.(*User)
 	if !ok {
-		ctx.JSON(http.StatusOK, ErrResponse{Code: 500, Message: "内部错误"})
+		ctx.JSON(http.StatusInternalServerError, ErrResponse{Code: 500, Message: "内部错误"})
 		ctx.Abort()
 	}
 
