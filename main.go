@@ -29,6 +29,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -335,8 +336,9 @@ func registerView(ctx *gin.Context) {
 		ctx.JSON(http.StatusNotFound, ErrResponse{Code: 404, Message: "参数错误"})
 		return
 	}
+	reg, _ := regexp.Compile("\\s")
 	h := md5.New()
-	h.Write([]byte(form.UserPubKey))
+	h.Write([]byte(reg.ReplaceAllString(form.UserPubKey, "")))
 	userMd5 := hex.EncodeToString(h.Sum(nil))
 	var user User
 	db.First(&user, "user_md5=?", userMd5)
